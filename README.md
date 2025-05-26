@@ -10,6 +10,12 @@ Vibe Coded self contained HTML Shoot ’em up game.
 
 ## Features
 
+### Game Stats
+Display game statistics, achievements and commands (WASD movement). Press `R` to restart game. 
+
+<img width="439" alt="Screenshot 2025-05-26 160028" src="https://github.com/user-attachments/assets/34614588-2bd5-4fa9-ac74-b88f7346c41e" />
+
+
 ### Tracking
 Hearts tracking number of lives, score and kills.
 
