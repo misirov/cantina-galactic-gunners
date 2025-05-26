@@ -1,0 +1,2435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galactic Gunners</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            touch-action: none;
+        }
+        #gameCanvas {
+            display: block;
+        }
+        #score {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            font-size: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 20, 40, 0.8);
+            color: #fff;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            font-size: 16px;
+            border-radius: 5px;
+            border: 2px solid #00ff88;
+            display: none;  /* Hidden by default */
+            text-align: left;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="score">
+        <span>Score: 0</span>
+        <span>Kills: 0</span>
+    </div>
+    <div id="controls">
+        <strong>Controls:</strong><br>
+        W/A/S/D - Move<br>
+        Enter - Shoot<br>
+        R - Restart Game<br>
+    </div>
+    <script>
+        // Canvas setup
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score').children[0];
+        const killsDisplay = document.getElementById('score').children[1];
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Game state
+        let state = 'playing';
+        let score = 0;
+        let difficulty = 1;
+
+        // Define SVGs first
+        const svgAvatars = {
+            player: '/assets/cantardi.svg',
+            commander: '/assets/hari.svg',
+            judge: '/assets/hrishi.svg',
+            cantardi: '/assets/cantardi.svg',
+            captain: '/assets/cbym.svg',
+            enemyBasic: '/assets/enemy-basic.svg',
+            enemyFast: '/assets/enemy-fast.svg',
+            enemyTank: '/assets/enemy-tank.svg',
+            enemyBoss: '/assets/enemy-boss.svg'
+        };
+
+        // Initialize player image after SVGs are defined
+        const playerImage = new Image();
+        playerImage.src = svgAvatars.player;
+
+        // Preload enemy images
+        const enemyImages = {};
+        ['enemyBasic', 'enemyFast', 'enemyTank', 'enemyBoss'].forEach(type => {
+            const img = new Image();
+            img.src = svgAvatars[type];
+            enemyImages[type] = img;
+        });
+
+        // Define enemy types with their properties and behaviors
+        const enemyTypes = {
+            malware: {
+                name: 'Malware',
+                width: 25,
+                height: 25,
+                speed: 2.5,    // Reduced from 3
+                health: 1,
+                color: '#ff3333',
+                points: 10,
+                behavior: 'chase',
+                deathMessage: 'Malware eliminated!',
+                description: 'Fast but weak',
+                speedLimit: 4
+            },
+            ransomware: {
+                name: 'Ransomware',
+                width: 40,
+                height: 40,
+                speed: 1.5,    // Reduced from 2
+                health: 3,
+                color: '#8800ff',
+                points: 30,
+                behavior: 'zigzag',
+                deathMessage: 'Ransomware neutralized!',
+                description: 'Tough and unpredictable',
+                speedLimit: 3
+            },
+            botnet: {
+                name: 'Botnet',
+                width: 20,
+                height: 20,
+                speed: 3,      // Keep fast but limited
+                health: 1,
+                color: '#00ff88',
+                points: 15,
+                behavior: 'swarm',
+                deathMessage: 'Botnet disconnected!',
+                description: 'Moves in groups',
+                speedLimit: 4.5
+            },
+            zeroday: {
+                name: 'Zero-Day',
+                width: 50,
+                height: 50,
+                speed: 2,      // Adjusted base speed
+                health: 5,
+                color: '#ff0000',
+                points: 50,
+                behavior: 'teleport',
+                deathMessage: 'Zero-day patched!',
+                description: 'Unpredictable teleporting threat',
+                speedLimit: 3.5
+            }
+        };
+
+        // Add after enemyTypes and before bossType:
+        const GAME_CONFIG = {
+            BOSS_TRIGGER_SCORE: 2000,  // Score needed to trigger boss
+            BOSS_SCORE_INTERVAL: 2000  // Score interval between boss spawns
+        };
+
+        // Then the bossType definition:
+        const bossType = {
+            name: "Lazarus",
+            pattern: "spiral",
+            color: "#ff0088",
+            width: 100,
+            height: 100,
+            health: 100,
+            speed: 1.5,  // Reduced speed
+            attackInterval: 60  // New property to control attack frequency
+        };
+
+        // Add after the game state variables (score, difficulty)
+        let bossActive = false;
+        let currentBoss = null;
+        let bossProjectiles = [];
+        let lastBossSpawn = 0;
+
+        // Player
+        const player = {
+            x: canvas.width / 2,
+            y: canvas.height / 2,
+            width: 40,
+            height: 40,
+            speed: 0.4,        // Base acceleration
+            vx: 0,
+            vy: 0,
+            friction: 0.98,    // Keep same friction
+            maxSpeed: 6,       // Max speed
+            shield: false,
+            weapon: 'default',
+            lastShot: 0,
+            shotCooldown: 200,
+            lives: 3,
+            invulnerable: 0  // Invulnerability frames after getting hit
+        };
+
+        // Arrays
+        const lasers = [];
+        const enemies = [];
+        const powerUps = [];
+        const particles = [];
+        const laserSpeed = 10;
+        const laserColor = '#f00';
+        const popupTexts = [];
+        const sparkles = [];
+
+        // Placeholder sounds
+        const shootSound = { play: () => {} };  // Empty audio object
+        const explodeSound = { play: () => {} };
+
+        // Controls
+        const keys = {};
+        let touchX = null, touchY = null;
+        window.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (e.code === 'KeyR' && state === 'gameOver') {
+                // Reset game state
+                state = 'playing';
+                score = 0;
+                difficulty = 1;
+
+                // Clear all arrays
+                enemies.length = 0;
+                lasers.length = 0;
+                powerUps.length = 0;
+                particles.length = 0;
+                bossProjectiles.length = 0;
+                popupTexts.length = 0;
+                sparkles.length = 0;
+
+                // Reset player
+                player.x = canvas.width / 2;
+                player.y = canvas.height / 2;
+                player.vx = 0;
+                player.vy = 0;
+                player.lives = 3;
+                player.weapon = 'default';
+                player.shield = false;
+                player.invulnerable = 0;
+
+                // Reset UI
+                scoreDisplay.textContent = `Score: ${score}`;
+                killsDisplay.textContent = 'Kills: 0';
+                document.getElementById('controls').style.display = 'none';
+
+                // Reset spawn system
+                clearInterval(spawnInterval);
+                spawnInterval = setInterval(spawnEnemy, 1000);
+
+                // Reset boss state
+                bossActive = false;
+                currentBoss = null;
+                lastBossSpawn = 0;
+
+                // Reset achievement and quest states
+                achievementState.gameStartTime = Date.now();
+                achievementState.collectedWeapons.clear();
+                achievementState.lastMilestoneCheck = 0;
+                achievementState.enemiesKilled = 0;
+                questState.active = null;
+                questState.enemiesKilled = 0;
+                questState.startTime = Date.now();
+                questState.lastQuestTime = 0;
+                questState.initialDelay = true;
+                questState.completedQuests.clear();
+
+                // Reset video call state
+                currentVideoCall = null;
+                lastRandomCall = 0;
+                lastMilestone = 0;
+            }
+        });
+        window.addEventListener('keyup', (e) => keys[e.code] = false);
+        canvas.addEventListener('touchstart', (e) => {
+            const touch = e.touches[0];
+            touchX = touch.clientX;
+            touchY = touch.clientY;
+            shoot();
+        });
+        canvas.addEventListener('touchmove', (e) => {
+            const touch = e.touches[0];
+            touchX = touch.clientX;
+            touchY = touch.clientY;
+        });
+        canvas.addEventListener('touchend', () => { touchX = null; touchY = null; });
+
+        // Enemy behavior functions
+        const enemyBehaviors = {
+            chase: (enemy, player) => {
+                const angle = Math.atan2(player.y - enemy.y, player.x - enemy.x);
+                enemy.vx = Math.cos(angle) * enemy.speed;
+                enemy.vy = Math.sin(angle) * enemy.speed;
+            },
+            zigzag: (enemy, player) => {
+                enemy.zigzagTime = (enemy.zigzagTime || 0) + 1;
+                const angle = Math.atan2(player.y - enemy.y, player.x - enemy.x);
+                const zigzagOffset = Math.sin(enemy.zigzagTime * 0.1) * 2;
+                enemy.vx = Math.cos(angle + zigzagOffset) * enemy.speed;
+                enemy.vy = Math.sin(angle + zigzagOffset) * enemy.speed;
+            },
+            swarm: (enemy, player, enemies) => {
+                // Calculate center of nearby enemies
+                const nearbyEnemies = enemies.filter(e => 
+                    e !== enemy && 
+                    distance(e.x, e.y, enemy.x, enemy.y) < 100 &&
+                    e.type === enemy.type
+                );
+                
+                let centerX = enemy.x, centerY = enemy.y;
+                if (nearbyEnemies.length > 0) {
+                    centerX = nearbyEnemies.reduce((sum, e) => sum + e.x, 0) / nearbyEnemies.length;
+                    centerY = nearbyEnemies.reduce((sum, e) => sum + e.y, 0) / nearbyEnemies.length;
+                }
+
+                // Move towards both player and swarm center
+                const toPlayer = Math.atan2(player.y - enemy.y, player.x - enemy.x);
+                const toCenter = Math.atan2(centerY - enemy.y, centerX - enemy.x);
+                enemy.vx = (Math.cos(toPlayer) + Math.cos(toCenter)) * enemy.speed * 0.5;
+                enemy.vy = (Math.sin(toPlayer) + Math.sin(toCenter)) * enemy.speed * 0.5;
+            },
+            teleport: (enemy, player) => {
+                enemy.teleportTimer = (enemy.teleportTimer || 0) + 1;
+                if (enemy.teleportTimer > 120) { // Teleport every 2 seconds
+                    enemy.teleportTimer = 0;
+                    enemy.x = player.x + (Math.random() - 0.5) * 400;
+                    enemy.y = player.y + (Math.random() - 0.5) * 400;
+                    // Keep within bounds
+                    enemy.x = Math.max(0, Math.min(canvas.width, enemy.x));
+                    enemy.y = Math.max(0, Math.min(canvas.height, enemy.y));
+                }
+                enemyBehaviors.chase(enemy, player);
+            }
+        };
+
+        // Initialize spawn interval
+        let spawnInterval = setInterval(spawnEnemy, 1000);
+
+        // Updated spawn enemy function
+        function spawnEnemy() {
+            const types = Object.keys(enemyTypes);
+            const typeKey = types[Math.floor(Math.random() * types.length)];
+            const type = enemyTypes[typeKey];
+            
+            // Calculate difficulty
+            const currentDifficulty = calculateDifficulty(score);
+            
+            // Calculate speed with more controlled scaling
+            // Ensure enemy speed never exceeds 70% of player max speed
+            const maxAllowedSpeed = player.maxSpeed * 0.7;
+            const baseSpeed = type.speed;
+            const difficultyBonus = (currentDifficulty - 1) * 0.3; // Reduced difficulty impact
+            const finalSpeed = Math.min(
+                baseSpeed * (1 + difficultyBonus),
+                maxAllowedSpeed,
+                type.speedLimit
+            );
+
+            // Spawn position
+            let x, y;
+            const side = Math.floor(Math.random() * 4);
+            switch (side) {
+                case 0: x = Math.random() * canvas.width; y = -type.height; break;
+                case 1: x = canvas.width + type.width; y = Math.random() * canvas.height; break;
+                case 2: x = Math.random() * canvas.width; y = canvas.height + type.height; break;
+                case 3: x = -type.width; y = Math.random() * canvas.height; break;
+            }
+
+            // Create enemy
+            const enemy = {
+                x, y,
+                width: type.width,
+                height: type.height,
+                speed: finalSpeed,
+                health: type.health,
+                maxHealth: type.health,
+                color: type.color,
+                points: type.points,
+                type: typeKey,
+                behavior: type.behavior,
+                deathMessage: type.deathMessage,
+                vx: 0,
+                vy: 0,
+                baseSpeed: finalSpeed, // Store base speed for world modifiers
+            };
+
+            // Apply behavior immediately
+            enemyBehaviors[type.behavior](enemy, player, enemies);
+
+            // Store base speed
+            enemy.baseSpeed = enemy.speed;
+            
+            // Apply current world modifier
+            enemy.speed *= gameWorlds[worldSystem.currentWorld].spawnRateMult;
+
+            enemies.push(enemy);
+        }
+
+        // Spawn weapon upgrades
+        function spawnPowerUp() {
+            const types = ['speed', 'super', '360', 'mega-ray', 'heart'];
+            const type = types[Math.floor(Math.random() * types.length)];
+            const x = Math.random() * (canvas.width - 20);
+            const y = Math.random() * (canvas.height - 20);
+            powerUps.push({ 
+                x, y, 
+                width: 20, 
+                height: 20, 
+                type,
+                lifetime: 1800  // 30 seconds at 60fps
+            });
+        }
+
+        // Add spawn interval back
+        setInterval(spawnPowerUp, 5000);
+
+        // Collision detection
+        function rectIntersect(r1, r2) {
+            const padding = 10;
+            return !(r1.x + r1.width - padding < r2.x + padding || 
+                     r1.x + padding > r2.x + r2.width - padding || 
+                     r1.y + r1.height - padding < r2.y + padding || 
+                     r1.y + padding > r2.y + r2.height - padding);
+        }
+
+        // Distance calculation
+        function distance(x1, y1, x2, y2) {
+            return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        }
+
+        // Shoot with weapon styles
+        function shoot() {
+            const now = Date.now();
+            if (now - player.lastShot < player.shotCooldown) return;
+            player.lastShot = now;
+            const angle = Math.atan2(player.vy, player.vx);
+
+            if (player.weapon === 'mega-ray') {
+                // Calculate the beam end point at screen edge
+                const beamLength = Math.max(canvas.width, canvas.height) * 2; // Make sure it reaches screen edge
+                const beamEndX = player.x + Math.cos(angle) * beamLength;
+                const beamEndY = player.y + Math.sin(angle) * beamLength;
+                
+                // Create a stationary beam
+                lasers.push({ 
+                    x: player.x,
+                    y: player.y,
+                    endX: beamEndX,
+                    endY: beamEndY,
+                    width: 200, // Increased beam width from 50 to 200
+                    isBeam: true,
+                    life: 20,
+                    angle: angle
+                });
+                player.shotCooldown = 1000;
+            } else if (player.weapon === '360') {
+                for (let i = 0; i < 360; i += 30) {
+                    const rad = i * Math.PI / 180;
+                    lasers.push({ x: player.x, y: player.y, width: 4, height: 10, vx: Math.cos(rad) * laserSpeed, vy: Math.sin(rad) * laserSpeed });
+                }
+                player.shotCooldown = 200;
+            } else if (player.weapon === 'super') {
+                lasers.push({ x: player.x, y: player.y, width: 20, height: 40, vx: Math.cos(angle) * laserSpeed, vy: Math.sin(angle) * laserSpeed });
+                player.shotCooldown = 200;
+            } else if (player.weapon === 'speed') {
+                lasers.push({ x: player.x, y: player.y, width: 4, height: 10, vx: Math.cos(angle - 0.2) * laserSpeed, vy: Math.sin(angle - 0.2) * laserSpeed });
+                lasers.push({ x: player.x, y: player.y, width: 4, height: 10, vx: Math.cos(angle) * laserSpeed, vy: Math.sin(angle) * laserSpeed });
+                lasers.push({ x: player.x, y: player.y, width: 4, height: 10, vx: Math.cos(angle + 0.2) * laserSpeed, vy: Math.sin(angle + 0.2) * laserSpeed });
+                player.shotCooldown = 200;
+            } else { // default
+                lasers.push({ x: player.x, y: player.y, width: 4, height: 10, vx: Math.cos(angle) * laserSpeed, vy: Math.sin(angle) * laserSpeed });
+                player.shotCooldown = 200;
+            }
+        }
+
+        // Update the avatar mapping
+        const avatarNameToFile = {
+            'Commander Hari': 'hari',
+            'Supreme Judge': 'hrishi',
+            'Cantardi': 'cantardi',
+            'CbyM': 'cbym',
+            'G Class': 'g_class',
+            'cmichel': 'cmichel',  // Updated to use cmichel's avatar
+            'zigtur': 'zigtur'     // Updated to use zigtur's avatar
+        };
+
+        // Initialize avatar images with correct name mapping
+        const avatarImages = {};
+        Object.entries(avatarNameToFile).forEach(([characterName, fileName]) => {
+            const img = new Image();
+            img.src = `/assets/${fileName}.svg`;
+            avatarImages[characterName] = img;
+        });
+
+        // Initialize achievement state
+        const achievementState = {
+            collectedWeapons: new Set(),
+            gameStartTime: Date.now(),
+            finalTime: 0,
+            notifications: [],
+            lastMilestoneCheck: 0,
+            milestoneDelay: 2000,
+            enemiesKilled: 0
+        };
+
+        // Initialize video call variables
+        let currentVideoCall = null;
+        let lastMilestone = 0;
+
+        // Update the startVideoCall function to handle higher milestones
+        function startVideoCall(trigger) {
+            let messages;
+            const now = Date.now();
+            
+            if (trigger === 'milestone') {
+                // Find the next unchecked milestone
+                const milestones = Object.keys(videoCallMessages.milestones)
+                    .map(Number)
+                    .sort((a, b) => a - b);
+                
+                for (let milestone of milestones) {
+                    if (score >= milestone && milestone > achievementState.lastMilestoneCheck) {
+                        messages = videoCallMessages.milestones[milestone];
+                        achievementState.lastMilestoneCheck = milestone;
+                        lastMilestone = now;
+                        break;
+                    }
+                }
+            } else if (trigger === 'random') {
+                messages = [videoCallMessages.random[Math.floor(Math.random() * videoCallMessages.random.length)]];
+            }
+
+            if (!messages || currentVideoCall) return;
+
+            currentVideoCall = {
+                dialogue: {
+                    name: messages[0].name,
+                    avatar: `/assets/${avatarNameToFile[messages[0].name]}.svg`,
+                    messages: messages
+                },
+                currentMessage: 0,
+                timer: 300,
+                fadeIn: 15,
+                fadeOut: 0,
+                type: messages[0].type
+            };
+        }
+
+        // Add random call timer and interval
+        let lastRandomCall = 0;
+        const randomCallInterval = 7000; // 15 seconds between possible calls
+
+        // Update the messages with higher milestone values
+        const videoCallMessages = {
+            milestones: {
+                500: [
+                    { name: "Cantardi", message: "Ha, compete against me?", type: "motivation" },
+                    { name: "Supreme Judge", message: "Judge them. Judge them all.", type: "humor" }
+                ],
+                1000: [
+                    { name: "Commander Hari", message: "Nice.", type: "praise" },
+                    { name: "Supreme Judge", message: "Critical confirmed.", type: "humor" }
+                ],
+                1500: [
+                    { name: "Cantardi", message: "They won't stop coming... there's too many of them!", type: "motivation" },
+                    { name: "CbyM", message: "Stay focused. Someone is introducing more bugs.", type: "warning" }
+                ],
+                2000: [
+                    { name: "Cantardi", message: "!", type: "motivation" },
+                    { name: "Commander Hari", message: "Keep up the good work!", type: "motivation" }
+                ],
+                2500: [
+                    { name: "zigtur", message: "These bugs are getting smarter!", type: "warning" },
+                    { name: "cmichel", message: "Keep stepping through them!", type: "tech" }
+                ],
+                3000: [
+                    { name: "G Class", message: "VROOOOOM!! VROOOOOM!! *engine sounds*", type: "humor" },
+                    { name: "CbyM", message: "Look! The bulgarian mafia is coming to help!", type: "warning" },
+                ],
+                3500: [
+                    { name: "Supreme Judge", message: "YOUR ESCALATION IS INVALID", type: "warning" },
+                    { name: "Commander Hari", message: "Don't let them merge to main!", type: "tech" },
+                    { name: "Cantardi", message: "I'm trying!!", type: "motivation" },
+                ],
+                4000: [
+                    { name: "cmichel", message: "The AI is too powerful...", type: "tech" },
+                    { name: "zigtur", message: "Watch out, prod is under attack!", type: "warning" }
+                ]
+            },
+            random: [
+                // Existing random messages
+                { name: "Commander Hari", message: "Nice.", type: "praise" },
+                { name: "Commander Hari", message: "Keep up the good work!", type: "motivation" },
+                { name: "Supreme Judge", message: "Critical confirmed.", type: "humor" },
+                { name: "Supreme Judge", message: "Use POC! It's effective against them!", type: "motivation" },
+                { name: "Supreme Judge", message: "Judge them. Judge them all.", type: "humor" },
+                { name: "Cantardi", message: "They won't stop! But neither will I!", type: "motivation" },
+                { name: "CbyM", message: "More bugs incoming!", type: "warning" },
+                { name: "G Class", message: "BROOOOOM!!", type: "humor" },
+                { name: "G Class", message: "BROOM! BROOM! BROOM!", type: "humor" },
+                { name: "cmichel", message: "Exception caught in sector 7!", type: "tech" },
+                { name: "cmichel", message: "Memory leak detected!", type: "warning" },
+                { name: "zigtur", message: "This bug needs regression testing!", type: "tech" },
+                { name: "zigtur", message: "Keep those test cases running!", type: "motivation" },
+                { name: "Commander Hari", message: "The codebase must be protected!", type: "motivation" },
+                { name: "Supreme Judge", message: "Your exploit is REJECTED!", type: "humor" }
+            ]
+        };
+
+        // Add start message sequence
+        const startMessage = [
+            {
+                name: "Commander Hari",
+                message: "Protect the codebase at all costs!",
+                type: "motivation"
+            },
+            {
+                name: "Cantardi",
+                message: "Roger that",
+                type: "motivation"
+            }
+        ];
+
+        // Initialize the game with start message sequence
+        currentVideoCall = {
+            dialogue: {
+                name: startMessage[0].name,
+                avatar: `/assets/${avatarNameToFile[startMessage[0].name]}.svg`,
+                messages: startMessage
+            },
+            currentMessage: 0,
+            timer: 300,
+            fadeIn: 15,
+            fadeOut: 0,
+            type: startMessage[0].type
+        };
+
+        // Update the achievements
+        const achievements = {
+            firstBlood: {
+                id: 'firstBlood',
+                name: 'First Blood',
+                description: 'Eliminate your first threat',
+                condition: (_, state) => state.enemiesKilled >= 1,
+                icon: '🩸',
+                reward: 'First step into security',
+                unlocked: false
+            },
+            juniorResearcher: {
+                id: 'juniorResearcher',
+                name: 'Junior Security Researcher',
+                description: 'Eliminate 20 threats',
+                condition: (_, state) => state.enemiesKilled >= 20,
+                icon: '🐛',
+                reward: 'First steps in security',
+                unlocked: false
+            },
+            toolNerd: {
+                id: 'toolNerd',
+                name: 'Tool Nerd',
+                description: 'Collect all weapon types',
+                condition: (_, state) => state.collectedWeapons.size >= 4,
+                icon: '🧪',
+                reward: 'Master of tools',
+                unlocked: false
+            },
+            survivoooor: {
+                id: 'survivoooor',
+                name: 'Survivoooor',
+                description: 'Survive for 2 minutes',
+                condition: (_, state) => (Date.now() - state.gameStartTime) >= 120000,
+                icon: '🛡️',
+                reward: 'Survival expert',
+                unlocked: false
+            },
+            securityResearcher: {
+                id: 'securityResearcher',
+                name: 'Security Researcher',
+                description: 'Eliminate 100 threats',
+                condition: (_, state) => state.enemiesKilled >= 50,
+                icon: '🔍',
+                reward: 'Advanced security skills',
+                unlocked: false
+            },
+            leadResearcher: {
+                id: 'leadResearcher',
+                name: 'Lead Security Researcher',
+                description: 'Eliminate 200 threats',
+                condition: (_, state) => state.enemiesKilled >= 150,
+                icon: '👑',
+                reward: 'Security leadership achieved',
+                unlocked: false
+            }
+        };
+
+        // Achievement notification system
+        function showAchievementNotification(achievement) {
+            achievementState.notifications.push({
+                achievement,
+                timer: 300,  // 5 seconds
+                y: -80,      // Start higher above the screen
+                targetY: 20, // Move to top of screen
+                opacity: 0   // Start transparent
+            });
+        }
+
+        // Check achievements
+        function checkAchievements() {
+            Object.values(achievements).forEach(achievement => {
+                if (!achievement.unlocked && 
+                    achievement.condition(score, achievementState)) {
+                    achievement.unlocked = true;
+                    showAchievementNotification(achievement);
+                }
+            });
+        }
+
+        // Quest system
+        const questTypes = {
+            killCount: {
+                check: (state) => state.enemiesKilled >= state.target,
+                format: (target) => `Eliminate ${target} threats`
+            },
+            surviveTime: {
+                check: (state) => (Date.now() - state.startTime) >= state.target * 1000,
+                format: (target) => `Survive for ${target} seconds`
+            },
+            collectWeapons: {
+                check: (state) => state.collectedWeapons.size >= state.target,
+                format: (target) => `Collect ${target} different weapons`
+            },
+            scoreReach: {
+                check: (state) => score >= state.target,
+                format: (target) => `Reach ${target} points`
+            }
+        };
+
+        // Quest pool
+        const questPool = [
+            {
+                id: 'quick_patch',
+                type: 'killCount',
+                target: 10,        // Keep original target
+                timeLimit: 30,     // Set to 30 seconds
+                reward: 100,
+                title: 'Fix Review',
+                description: 'Review all fixes ASAP!'
+            },
+            {
+                id: 'weapon_test',
+                type: 'collectWeapons',
+                target: 2,         // Keep original target
+                timeLimit: 30,     // Changed from 45 to 30
+                reward: 150,
+                title: 'Tool testing',
+                description: 'CISO needs tools!'
+            },
+            {
+                id: 'penetration_test',
+                type: 'scoreReach',
+                target: 1000,       // Keep original target
+                timeLimit: 30,     // Changed from 60 to 30
+                reward: 200,
+                title: 'Penetration Test',
+                description: 'Score 1000 points in 30 seconds',
+                progress: (state) => {
+                    return Math.min(100, (score / 1000) * 100);
+                }
+            },
+            {
+                id: 'uptime_check',
+                type: 'surviveTime',
+                target: 30,        // Keep original target
+                timeLimit: 30,     // Already 30
+                reward: 150,
+                title: 'No downtime',
+                description: 'Maintain system stability!'
+            }
+        ];
+
+        // Add progress tracking to quest state
+        const questState = {
+            active: null,
+            enemiesKilled: 0,
+            startTime: Date.now(),
+            lastQuestTime: 0,
+            questCooldown: 10000,  // Changed to 10 seconds
+            initialDelay: true,
+            completedQuests: new Set(),
+            progress: 0
+        };
+
+        // Update drawQuestUI function to handle quest completion
+        function drawQuestUI() {
+            if (!questState.active) return;
+
+            const quest = questState.active;
+            const timeLeft = Math.max(0, Math.ceil((quest.endTime - Date.now()) / 1000));
+            
+            // Calculate current progress
+            const state = {
+                enemiesKilled: questState.enemiesKilled,
+                startTime: quest.startTime,
+                target: quest.target,
+                collectedWeapons: achievementState.collectedWeapons,
+                score: score  // Add score to state object
+            };
+
+            // Check progress
+            let progress = 0;
+            switch (quest.type) {
+                case 'killCount':
+                    progress = Math.min(1, questState.enemiesKilled / quest.target);
+                    break;
+                case 'surviveTime':
+                    progress = Math.min(1, (Date.now() - quest.startTime) / (quest.target * 1000));
+                    break;
+                case 'collectWeapons':
+                    progress = Math.min(1, achievementState.collectedWeapons.size / quest.target);
+                    break;
+                case 'scoreReach':
+                    progress = Math.min(1, state.score / quest.target);  // Use state.score
+                    break;
+            }
+
+            // Check for quest completion
+            if (progress >= 1 && !questState.completedQuests.has(quest.id)) {
+                // Mark quest as completed
+                questState.completedQuests.add(quest.id);
+                // Add score reward
+                score += quest.reward;
+                scoreDisplay.textContent = `Score: ${score}`;
+                // Show completion popup
+                createQuestPopup('Quest Complete!', quest.reward);
+                // Remove quest after delay
+                setTimeout(() => {
+                    questState.active = null;
+                }, 1000);
+            } else if (Date.now() > quest.endTime && !questState.completedQuests.has(quest.id)) {
+                // Quest failed
+                createQuestPopup('Quest Failed!', 0);
+                questState.active = null;
+                questState.lastQuestTime = Date.now();
+            }
+
+            // Draw quest box in top right
+            const padding = 10;
+            const boxWidth = 300;
+            const boxHeight = 80;
+            const x = canvas.width - boxWidth - padding;
+            const y = padding;
+            
+            // Determine box color based on time and progress
+            let boxColor;
+            if (progress >= 1) {
+                boxColor = 'rgba(0, 255, 0, 0.3)'; // Green for completion
+            } else if (timeLeft < 10) {
+                boxColor = 'rgba(255, 0, 0, 0.3)'; // Red for running out of time
+            } else {
+                boxColor = 'rgba(0, 20, 40, 0.8)'; // Default color
+            }
+            
+            // Draw quest box with current color
+            ctx.fillStyle = boxColor;
+            ctx.fillRect(x, y, boxWidth, boxHeight);
+            ctx.strokeStyle = progress >= 1 ? '#00ff00' : '#00ff88';
+            ctx.strokeRect(x, y, boxWidth, boxHeight);
+
+            // Progress bar
+            const progressBarHeight = 4;
+            const progressBarY = y + boxHeight - progressBarHeight - 5;
+            
+            // Background of progress bar
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(x + 10, progressBarY, boxWidth - 20, progressBarHeight);
+            
+            // Actual progress
+            ctx.fillStyle = progress >= 1 ? '#00ff00' : timeLeft < 10 ? '#ff3333' : '#00ff88';
+            ctx.fillRect(x + 10, progressBarY, (boxWidth - 20) * progress, progressBarHeight);
+
+            // Quest title
+            ctx.fillStyle = progress >= 1 ? '#00ff00' : '#00ff88';
+            ctx.font = 'bold 16px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(quest.title, x + 10, y + 20);
+
+            // Quest description
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px Arial';
+            ctx.fillText(quest.description, x + 10, y + 40);
+
+            // Quest objective with progress
+            ctx.fillStyle = '#aaa';
+            let progressText = '';
+            switch (quest.type) {
+                case 'killCount':
+                    progressText = `${questState.enemiesKilled}/${quest.target}`;
+                    break;
+                case 'surviveTime':
+                    progressText = `${Math.floor((Date.now() - quest.startTime) / 1000)}/${quest.target}s`;
+                    break;
+                case 'collectWeapons':
+                    progressText = `${achievementState.collectedWeapons.size}/${quest.target}`;
+                    break;
+                case 'scoreReach':
+                    progressText = `${score}/${quest.target}`;
+                    break;
+            }
+            ctx.fillText(`${questTypes[quest.type].format(quest.target)} (${progressText})`, x + 10, y + 60);
+
+            // Time left
+            ctx.fillStyle = timeLeft < 10 ? '#ff3333' : '#fff';
+            ctx.textAlign = 'right';
+            ctx.fillText(`${timeLeft}s`, x + boxWidth - 10, y + 20);
+
+            // If completed, start fade out
+            if (progress >= 1) {
+                setTimeout(() => {
+                    questState.active = null;
+                }, 1000); // Disappear after 1 second of being complete
+            }
+        }
+
+        // Add popup text system for quests
+        function createQuestPopup(text, reward) {
+            const x = canvas.width / 2;
+            const y = canvas.height / 2;
+            
+            // Create completion popup
+            popupTexts.push({
+                text: text,
+                x: x,
+                y: y,
+                color: '#00ff88',
+                size: 40,
+                life: 60,
+                vy: -2,
+                scale: 1,
+                glow: true
+            });
+
+            if (reward > 0) {
+                popupTexts.push({
+                    text: `+${reward} points`,
+                    x: x,
+                    y: y + 40,
+                    color: '#ffd700',
+                    size: 30,
+                    life: 60,
+                    vy: -2,
+                    scale: 1,
+                    glow: true
+                });
+            }
+        }
+
+        // Add startNewQuest function
+        function startNewQuest() {
+            // Only check for active quest and initial delay
+            if (questState.active || questState.initialDelay) {
+                return;
+            }
+
+            // Force new quest exactly every 10 seconds if not active
+            const now = Date.now();
+            if (now - questState.lastQuestTime < questState.questCooldown) {
+                return;
+            }
+            questState.lastQuestTime = now;
+
+            const availableQuests = questPool.filter(quest => !questState.completedQuests.has(quest.id));
+            if (availableQuests.length === 0) return;
+
+            const quest = availableQuests[Math.floor(Math.random() * availableQuests.length)];
+            questState.active = {
+                ...quest,
+                startTime: Date.now(),
+                endTime: Date.now() + (quest.timeLimit * 1000),
+                progress: 0
+            };
+
+            // Reset kill counter for this quest only
+            questState.enemiesKilled = 0;
+        }
+
+        // Add visual effects system
+        const visualEffects = {
+            screenShake: 0
+        };
+
+        // Enhanced particle system
+        function spawnParticles(x, y, color, type = 'normal') {
+            const configs = {
+                normal: { count: 15, speed: 4, life: 30, size: 2 },
+                explosion: { count: 25, speed: 6, life: 45, size: 3 },
+                powerup: { count: 20, speed: 3, life: 40, size: 2 },
+                mega: { count: 35, speed: 8, life: 50, size: 4 }
+            };
+
+            const config = configs[type];
+            for (let i = 0; i < config.count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * config.speed;
+                const size = Math.random() * config.size + 1;
+                particles.push({
+                    x, y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    life: Math.random() * config.life + 20,
+                    color: color,
+                    size: size,
+                    alpha: 1,
+                    spin: Math.random() * 0.2 - 0.1
+                });
+            }
+        }
+
+        // Screen shake effect
+        function addScreenShake(intensity) {
+            visualEffects.screenShake = Math.min(visualEffects.screenShake + intensity, 20);
+        }
+
+        // Add world definitions
+        const gameWorlds = {
+            normal: {
+                name: "Normal Space",
+                bgColor1: "#111111",
+                bgColor2: "#000000",
+                enemySpeedMult: 1,
+                spawnRateMult: 1,
+                particleColor: "#ffffff",
+                message: "Normal Space - Standard Protocol"
+            },
+            cyber: {
+                name: "Cyber Space",
+                bgColor1: "#001133",
+                bgColor2: "#000066",
+                enemySpeedMult: 1.2,
+                spawnRateMult: 0.8,
+                particleColor: "#00ff88",
+                message: "Cyber Space - Enhanced Security Zone"
+            },
+            quantum: {
+                name: "Quantum Realm",
+                bgColor1: "#330033",
+                bgColor2: "#660066",
+                enemySpeedMult: 0.8,
+                spawnRateMult: 1.5,
+                particleColor: "#ff00ff",
+                message: "Quantum Realm - Reality Distortion Active"
+            }
+        };
+
+        // Add portal system
+        class Portal {
+            constructor(x, y, targetWorld) {
+                this.x = x;
+                this.y = y;
+                this.radius = 40;
+                this.targetWorld = targetWorld;
+                this.pulseTimer = 0;
+                this.active = true;
+                this.particles = [];
+                this.lifetime = 600; // 10 seconds
+            }
+
+            update() {
+                this.pulseTimer += 0.05;
+                this.lifetime--;
+
+                // Add portal particles
+                if (Math.random() < 0.2) {
+                    const angle = Math.random() * Math.PI * 2;
+                    this.particles.push({
+                        x: this.x + Math.cos(angle) * this.radius,
+                        y: this.y + Math.sin(angle) * this.radius,
+                        vx: Math.cos(angle) * 2,
+                        vy: Math.sin(angle) * 2,
+                        life: 30,
+                        color: gameWorlds[this.targetWorld].particleColor
+                    });
+                }
+
+                // Update particles
+                for (let i = this.particles.length - 1; i >= 0; i--) {
+                    const p = this.particles[i];
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.life--;
+                    if (p.life <= 0) {
+                        this.particles.splice(i, 1);
+                    }
+                }
+            }
+
+            draw(ctx) {
+                // Draw portal glow
+                const gradient = ctx.createRadialGradient(
+                    this.x, this.y, 0,
+                    this.x, this.y, this.radius * 1.5
+                );
+                gradient.addColorStop(0, `${gameWorlds[this.targetWorld].particleColor}44`);
+                gradient.addColorStop(1, 'transparent');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius * 1.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Draw portal ring
+                ctx.strokeStyle = gameWorlds[this.targetWorld].particleColor;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius + Math.sin(this.pulseTimer) * 5, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Draw particles
+                this.particles.forEach(p => {
+                    ctx.fillStyle = p.color + Math.floor(p.life * 8).toString(16);
+                    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+                });
+
+                // Draw destination text
+                ctx.font = '14px Arial';
+                ctx.fillStyle = '#fff';
+                ctx.textAlign = 'center';
+                ctx.fillText(gameWorlds[this.targetWorld].name, this.x, this.y - this.radius - 10);
+            }
+
+            checkCollision(player) {
+                const dx = player.x - this.x;
+                const dy = player.y - this.y;
+                return Math.sqrt(dx * dx + dy * dy) < this.radius + player.width/2;
+            }
+        }
+
+        // Add world management
+        const worldSystem = {
+            currentWorld: 'normal',
+            portal: null,  // Only one portal at a time
+            transitionAlpha: 0,
+            transitioning: false,
+            nextWorld: null,
+            
+            spawnPortal() {
+                // Don't spawn if transitioning or if portal exists
+                if (this.transitioning || this.portal) return;
+                
+                // Get random position away from player
+                let x, y;
+                do {
+                    x = Math.random() * (canvas.width - 100) + 50;
+                    y = Math.random() * (canvas.height - 100) + 50;
+                } while (Math.abs(x - player.x) < 200 && Math.abs(y - player.y) < 200);
+
+                // Get random destination world
+                const possibleWorlds = Object.keys(gameWorlds).filter(w => w !== this.currentWorld);
+                const targetWorld = possibleWorlds[Math.floor(Math.random() * possibleWorlds.length)];
+
+                this.portal = new Portal(x, y, targetWorld);
+            },
+
+            startTransition(nextWorld) {  // Add this function back
+                this.transitioning = true;
+                this.nextWorld = nextWorld;
+                this.transitionAlpha = 0;
+            },
+
+            update() {
+                // Update portal if it exists
+                if (this.portal) {
+                    this.portal.update();
+
+                    // Check player collision
+                    if (this.portal.checkCollision(player)) {
+                        this.startTransition(this.portal.targetWorld);
+                        this.portal = null;
+                    }
+                }
+
+                // Handle world transition
+                if (this.transitioning) {
+                    this.transitionAlpha += 0.02;
+                    if (this.transitionAlpha >= 1) {
+                        this.currentWorld = this.nextWorld;
+                        this.transitioning = false;
+                        this.transitionAlpha = 0;
+                        
+                        // Show world entry message
+                        createQuestPopup(gameWorlds[this.currentWorld].message, 0);
+                    }
+                }
+            },
+
+            draw(ctx) {
+                // Draw world-specific background using gradients
+                const world = gameWorlds[this.currentWorld];
+                const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+                gradient.addColorStop(0, world.bgColor1);
+                gradient.addColorStop(1, world.bgColor2);
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Draw single portal if it exists
+                if (this.portal) {
+                    this.portal.draw(ctx);
+                }
+
+                // Draw transition overlay
+                if (this.transitioning) {
+                    ctx.fillStyle = `rgba(0, 0, 0, ${this.transitionAlpha})`;
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+            }
+        };
+
+        // Game loop
+        function update() {
+            // Apply screen shake
+            if (visualEffects.screenShake > 0) {
+                ctx.save();
+                const shake = visualEffects.screenShake;
+                ctx.translate(
+                    Math.random() * shake - shake/2,
+                    Math.random() * shake - shake/2
+                );
+                visualEffects.screenShake *= 0.9;
+            }
+
+            // Draw world first
+            worldSystem.draw(ctx);
+
+            if (state === 'playing') {
+                // Update world system
+                worldSystem.update();
+
+                // Spawn portal if none exists (reduced probability)
+                if (!worldSystem.portal && Math.random() < 0.0002) { // Much lower spawn rate
+                    worldSystem.spawnPortal();
+                }
+
+                // Apply world modifiers to enemies
+                const worldMods = gameWorlds[worldSystem.currentWorld];
+                enemies.forEach(enemy => {
+                    enemy.speed = enemy.baseSpeed * worldMods.enemySpeedMult;
+                });
+
+                // Player movement
+                if (keys['KeyA']) player.vx -= player.speed;
+                if (keys['KeyD']) player.vx += player.speed;
+                if (keys['KeyW']) player.vy -= player.speed;
+                if (keys['KeyS']) player.vy += player.speed;
+                if (keys['Enter']) shoot();
+                if (touchX !== null) {
+                    const dx = (touchX - player.x) * 0.05;
+                    const dy = (touchY - player.y) * 0.5;
+                    player.vx += dx > 0 ? Math.min(dx, player.speed) : Math.max(dx, -player.speed);
+                    player.vy += dy > 0 ? Math.min(dy, player.speed) : Math.max(dy, -player.speed);
+                }
+
+                player.vx = Math.max(-player.maxSpeed, Math.min(player.maxSpeed, player.vx)) * player.friction;
+                player.vy = Math.max(-player.maxSpeed, Math.min(player.maxSpeed, player.vy)) * player.friction;
+                player.x += player.vx;
+                player.y += player.vy;
+                player.x = Math.max(player.width / 2, Math.min(canvas.width - player.width / 2, player.x));
+                player.y = Math.max(player.height / 2, Math.min(canvas.height - player.height / 2, player.y));
+
+                // Check for milestones
+                if (!currentVideoCall) {
+                    startVideoCall('milestone');
+                }
+
+                // Random video calls (keep existing code)
+                const now = Date.now();
+                if (!currentVideoCall && now - lastRandomCall > randomCallInterval) {
+                    if (Math.random() < 0.4) {
+                        startVideoCall('random');
+                    }
+                    lastRandomCall = now;
+                }
+
+                // Lasers
+                ctx.fillStyle = laserColor;
+                for (let i = lasers.length - 1; i >= 0; i--) {
+                    const laser = lasers[i];
+                    if (laser.isBeam) {
+                        // Draw mega-ray beam
+                        ctx.save();
+                        ctx.translate(laser.x, laser.y);
+                        ctx.rotate(laser.angle);
+                        
+                        // Create gradient for beam
+                        const gradient = ctx.createLinearGradient(0, -laser.width/2, 0, laser.width/2);
+                        gradient.addColorStop(0, 'rgba(255, 0, 255, 0)');
+                        gradient.addColorStop(0.5, 'rgba(255, 0, 255, 0.8)');
+                        gradient.addColorStop(1, 'rgba(255, 0, 255, 0)');
+                        
+                        ctx.fillStyle = gradient;
+                        ctx.fillRect(0, -laser.width/2, Math.max(canvas.width, canvas.height) * 2, laser.width);
+                        
+                        // Add glow effect
+                        ctx.globalAlpha = 0.3;
+                        ctx.fillStyle = '#f0f';
+                        ctx.fillRect(0, -laser.width/4, Math.max(canvas.width, canvas.height) * 2, laser.width/2);
+                        ctx.globalAlpha = 1;
+                        
+                        ctx.restore();
+                        
+                        laser.life--;
+                        if (laser.life <= 0) {
+                            lasers.splice(i, 1);
+                        }
+
+                        // Check collision with enemies along the beam
+                        enemies.forEach((enemy, enemyIndex) => {
+                            // Calculate enemy's distance from beam center
+                            const dx = enemy.x - laser.x;
+                            const dy = enemy.y - laser.y;
+                            const dist = Math.abs(Math.cos(laser.angle) * dy - Math.sin(laser.angle) * dx);
+                            
+                            // If enemy is within beam width and in front of player
+                            if (dist < laser.width/2) {
+                                const dotProduct = Math.cos(laser.angle) * dx + Math.sin(laser.angle) * dy;
+                                if (dotProduct > 0) {
+                                    // Destroy enemy immediately
+                                    enemy.health = 0;
+                                    enemies.splice(enemyIndex, 1);
+                                    
+                                    // Visual and scoring effects
+                                    const scoreValue = enemy.type === 'small' ? 10 : enemy.type === 'medium' ? 20 : 50;
+                                    score += scoreValue;
+                                    spawnParticles(enemy.x, enemy.y, enemy.color, 'explosion');
+                                    addScreenShake(5);
+                                    createSparkle(enemy.x + enemy.width/2, enemy.y + enemy.height/2);
+                                    createPopupText(enemy.x + enemy.width/2, enemy.y, scoreValue);
+                                    explodeSound.play();
+                                    scoreDisplay.textContent = `Score: ${score}`;
+                                    difficulty = 1 + score / 2000;
+                                    achievementState.enemiesKilled++;
+                                    questState.enemiesKilled++;
+                                    killsDisplay.textContent = `Kills: ${achievementState.enemiesKilled}`;
+                                }
+                            }
+                        });
+                    } else {
+                        // Regular laser drawing and movement
+                        laser.x += laser.vx;
+                        laser.y += laser.vy;
+                        ctx.fillRect(laser.x, laser.y, laser.width, laser.height);
+                        if (laser.x < 0 || laser.x > canvas.width || laser.y < 0 || laser.y > canvas.height) {
+                            lasers.splice(i, 1);
+                        }
+                    }
+                }
+
+                // Enemies with health bars
+                for (let i = enemies.length - 1; i >= 0; i--) {
+                    const e = enemies[i];
+                    const dist = distance(e.x, e.y, player.x, player.y);
+                    if (e.type === 'small') {
+                        if (dist < 200) {
+                            const angle = Math.atan2(player.y - e.y, player.x - e.x);
+                            // Cap the speed and reduce difficulty impact
+                            const maxSpeed = 3 * Math.min(difficulty, 2); // Limit max speed
+                            e.vx = Math.cos(angle) * e.speed;
+                            e.vy = Math.sin(angle) * e.speed;
+                            // Apply speed limits
+                            e.vx = Math.max(-maxSpeed, Math.min(maxSpeed, e.vx));
+                            e.vy = Math.max(-maxSpeed, Math.min(maxSpeed, e.vy));
+                        } else {
+                            // Wandering behavior when far from player
+                            e.vx += (Math.random() - 0.5) * 0.2;
+                            e.vy += (Math.random() - 0.5) * 0.2;
+                            // Apply stricter speed limits for wandering
+                            e.vx = Math.max(-e.speed, Math.min(e.speed, e.vx * 0.98));
+                            e.vy = Math.max(-e.speed, Math.min(e.speed, e.vy * 0.98));
+                        }
+                    } else {
+                        const angle = Math.atan2(player.y - e.y, player.x - e.x);
+                        // Other enemy types keep their normal behavior
+                        e.vx = Math.cos(angle) * e.speed * Math.min(difficulty, 1.5);
+                        e.vy = Math.sin(angle) * e.speed * Math.min(difficulty, 1.5);
+                    }
+
+                    e.x += e.vx;
+                    e.y += e.vy;
+                    ctx.fillStyle = e.color;
+                    ctx.fillRect(e.x, e.y, e.width, e.height);
+
+                    // Health bar
+                    const healthPercent = e.health / e.maxHealth;
+                    const barWidth = e.width * healthPercent;
+                    ctx.fillStyle = `hsl(${healthPercent * 120}, 100%, 50%)`;
+                    ctx.fillRect(e.x, e.y - 5, barWidth, 3);
+
+                    // Check laser collisions
+                    let enemyDestroyed = false;
+                    for (let j = lasers.length - 1; j >= 0; j--) {
+                        const laser = lasers[j];
+                        if (laser.x < e.x + e.width && 
+                            laser.x + laser.width > e.x && 
+                            laser.y < e.y + e.height && 
+                            laser.y + laser.height > e.y) {
+                            
+                            // Calculate damage based on laser type
+                            let damage = 1;
+                            if (player.weapon === 'super') {
+                                damage = 2;
+                            }
+                            
+                            e.health -= damage;
+                            lasers.splice(j, 1);
+                            
+                            // Visual feedback for hit
+                            spawnParticles(laser.x, laser.y, '#fff', 'explosion');
+                            
+                            if (e.health <= 0) {
+                                enemies.splice(i, 1);
+                                const currentDifficulty = calculateDifficulty(score);
+                                const scoreValue = Math.floor((e.type === 'small' ? 10 : e.type === 'medium' ? 20 : 50) * currentDifficulty);
+                                score += scoreValue;
+                                spawnParticles(e.x, e.y, e.color, 'explosion');
+                                addScreenShake(5);
+                                createSparkle(e.x + e.width/2, e.y + e.height/2);
+                                createPopupText(e.x + e.width/2, e.y, scoreValue);
+                                explodeSound.play();
+                                scoreDisplay.textContent = `Score: ${score}`;
+                                difficulty = 1 + score / 2000;
+                                achievementState.enemiesKilled++;
+                                questState.enemiesKilled++;
+                                killsDisplay.textContent = `Kills: ${achievementState.enemiesKilled}`;
+                                enemyDestroyed = true;
+                                break;
+                            }
+                            break; // Exit laser loop after hit
+                        }
+                    }
+
+                    if (enemyDestroyed) continue;
+
+                    // Check player collision
+                    const playerBox = {
+                        x: player.x - player.width/2,
+                        y: player.y - player.height/2,
+                        width: player.width,
+                        height: player.height
+                    };
+                    const enemyBox = {
+                        x: e.x - e.width/2,
+                        y: e.y - e.height/2,
+                        width: e.width,
+                        height: e.height
+                    };
+                    
+                    if (rectIntersect(playerBox, enemyBox)) {
+                        if (player.invulnerable > 0 || player.shield || window.godmode) {
+                            player.shield = false;
+                            enemies.splice(i, 1);
+                            spawnParticles(e.x, e.y, e.color, 'explosion');
+                            addScreenShake(5);
+                            explodeSound.play();
+                        } else {
+                            player.lives--;
+                            player.invulnerable = 120; // 2 seconds of invulnerability
+                            addScreenShake(10);
+                            
+                            if (player.lives <= 0) {
+                                achievementState.finalTime = Date.now() - achievementState.gameStartTime;
+                                state = 'gameOver';
+                            } else {
+                                // Create hit feedback
+                                createPopupText(player.x, player.y - 30, null, `Lives: ${player.lives}`);
+                                spawnParticles(player.x, player.y, '#ff0000', 'explosion');
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Remove enemies that are off screen
+                    if (e.x < -e.width || e.x > canvas.width + e.width || 
+                        e.y < -e.height || e.y > canvas.height + e.height) {
+                        enemies.splice(i, 1);
+                    }
+                }
+
+                // Weapon upgrades
+                for (let i = powerUps.length - 1; i >= 0; i--) {
+                    const powerUp = powerUps[i];
+                    ctx.fillStyle = powerUp.type === 'speed' ? '#00f' : 
+                                    powerUp.type === 'super' ? '#ff0' : 
+                                    powerUp.type === 'mega-ray' ? '#f0f' : 
+                                    powerUp.type === 'heart' ? '#f00' : '#0ff';
+                    ctx.fillRect(powerUp.x, powerUp.y, powerUp.width, powerUp.height);
+                    
+                    // Simplified collision detection for power-ups
+                    const dx = Math.abs((player.x) - (powerUp.x + powerUp.width/2));
+                    const dy = Math.abs((player.y) - (powerUp.y + powerUp.height/2));
+                    
+                    // More forgiving collision detection
+                    if (dx < (player.width + powerUp.width)/2 && dy < (player.height + powerUp.height)/2) {
+                        if (powerUp.type === 'heart') {
+                            player.lives = Math.min(player.lives + 1, 5);  // Add life, max 5
+                            createPopupText(player.x, player.y - 30, null, `Lives: ${player.lives}`);
+                        } else {
+                            player.weapon = powerUp.type;
+                            if (powerUp.type === 'speed') {
+                                player.maxSpeed = 7;
+                            } else {
+                                player.maxSpeed = 5;
+                            }
+                        }
+                        powerUps.splice(i, 1);
+                        
+                        // Enhanced pickup feedback
+                        const message = weaponMessages[powerUp.type];
+                        spawnParticles(powerUp.x, powerUp.y, 
+                            powerUp.type === 'speed' ? '#00f' : 
+                            powerUp.type === 'super' ? '#ff0' : 
+                            powerUp.type === 'heart' ? '#f00' : '#0ff', 
+                            'powerup'
+                        );
+                        
+                        popupTexts.push({
+                            text: message.text,
+                            x: powerUp.x + powerUp.width/2,
+                            y: powerUp.y,
+                            color: message.color,
+                            size: message.size,
+                            glow: message.glow,
+                            life: 45,
+                            vy: -3,
+                            scale: 1.5,
+                            vx: (Math.random() - 0.5) * 4
+                        });
+
+                        achievementState.collectedWeapons.add(powerUp.type);
+                    }
+                }
+
+                // Particles
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const p = particles[i];
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.life--;
+                    p.alpha = p.life / 50;
+                    p.vx *= 0.99;
+                    p.vy *= 0.99;
+                    
+                    ctx.save();
+                    ctx.globalAlpha = p.alpha;
+                    ctx.translate(p.x, p.y);
+                    ctx.rotate(p.spin);
+                    ctx.fillStyle = p.color;
+                    ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size);
+                    ctx.restore();
+
+                    if (p.life <= 0) particles.splice(i, 1);
+                }
+
+                // Draw player with rotation
+                if (player.invulnerable > 0 && player.invulnerable % 10 > 5) {
+                    // Draw semi-transparent player when invulnerable and flashing
+                    ctx.save();
+                    ctx.globalAlpha = 0.5;
+                    if (playerImage.complete && playerImage.naturalWidth !== 0) {
+                        ctx.translate(player.x, player.y);
+                        const angle = Math.atan2(player.vy, player.vx);
+                        ctx.rotate(angle);
+                        ctx.drawImage(playerImage, -player.width / 2, -player.height / 2, player.width, player.height);
+                    } else {
+                        ctx.fillStyle = '#fff';
+                        ctx.fillRect(player.x - player.width / 2, player.y - player.height / 2, player.width, player.height);
+                    }
+                    ctx.restore();
+                } else {
+                    // Draw normal player
+                    if (playerImage.complete && playerImage.naturalWidth !== 0) {
+                        ctx.save();
+                        ctx.translate(player.x, player.y);
+                        const angle = Math.atan2(player.vy, player.vx);
+                        ctx.rotate(angle);
+                        ctx.drawImage(playerImage, -player.width / 2, -player.height / 2, player.width, player.height);
+                        ctx.restore();
+                    } else {
+                        ctx.fillStyle = '#fff';
+                        ctx.fillRect(player.x - player.width / 2, player.y - player.height / 2, player.width, player.height);
+                    }
+                }
+
+                // Update invulnerability counter
+                if (player.invulnerable > 0) {
+                    player.invulnerable--;
+                }
+
+                // Draw sparkles
+                for (let i = sparkles.length - 1; i >= 0; i--) {
+                    const sparkle = sparkles[i];
+                    sparkle.x += sparkle.vx;
+                    sparkle.y += sparkle.vy;
+                    sparkle.life--;
+                    
+                    ctx.fillStyle = sparkle.color;
+                    ctx.globalAlpha = sparkle.life / 40;
+                    ctx.beginPath();
+                    ctx.arc(sparkle.x, sparkle.y, sparkle.size, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    if (sparkle.life <= 0) {
+                        sparkles.splice(i, 1);
+                    }
+                }
+
+                // Draw popup texts
+                ctx.globalAlpha = 1;
+                for (let i = popupTexts.length - 1; i >= 0; i--) {
+                    const popup = popupTexts[i];
+                    popup.y += popup.vy;
+                    popup.x += popup.vx;
+                    popup.life--;
+                    
+                    // Scale effect
+                    const scale = popup.scale * (1 + Math.sin(popup.life * 0.2) * 0.2); // Pulsing effect
+                    const actualSize = popup.size * scale;
+                    
+                    ctx.font = `bold ${actualSize}px Arial`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    
+                    // Add glow effect for non-Japanese text
+                    if (popup.glow) {
+                        ctx.shadowColor = popup.color;
+                        ctx.shadowBlur = 20;
+                        ctx.lineWidth = 8;
+                        ctx.strokeStyle = '#000';
+                        ctx.strokeText(popup.text, popup.x, popup.y);
+                        ctx.lineWidth = 2;
+                        ctx.strokeStyle = popup.color;
+                        ctx.strokeText(popup.text, popup.x, popup.y);
+                    } else {
+                        ctx.lineWidth = 4;
+                        ctx.strokeStyle = '#000';
+                        ctx.strokeText(popup.text, popup.x, popup.y);
+                    }
+                    
+                    ctx.fillStyle = popup.color;
+                    ctx.fillText(popup.text, popup.x, popup.y);
+                    
+                    // Reset shadow
+                    ctx.shadowBlur = 0;
+                    
+                    if (popup.score) {
+                        ctx.font = 'bold 30px Arial';
+                        ctx.fillStyle = '#fff';
+                        ctx.strokeStyle = '#000';
+                        ctx.lineWidth = 3;
+                        ctx.strokeText(popup.score, popup.x, popup.y + 40);
+                        ctx.fillText(popup.score, popup.x, popup.y + 40);
+                    }
+                    
+                    // Fade out near end of life
+                    if (popup.life < 15) {
+                        ctx.globalAlpha = popup.life / 15;
+                    }
+                    
+                    if (popup.life <= 0) {
+                        popupTexts.splice(i, 1);
+                    }
+                }
+
+                // Update the video call render code
+                if (currentVideoCall) {
+                    // Draw video call interface
+                    const padding = 20;
+                    const width = canvas.width / 3;
+                    const height = 150;
+                    const x = canvas.width - width - padding;  // Changed from padding to right side
+                    const y = canvas.height - height - padding;
+
+                    // Background with scan lines
+                    ctx.fillStyle = 'rgba(0, 40, 80, 0.9)';
+                    ctx.fillRect(x, y, width, height);
+                    
+                    // Get current message data
+                    const currentMessageData = currentVideoCall.dialogue.messages[currentVideoCall.currentMessage];
+                    const avatar = avatarImages[currentMessageData.name];
+                    
+                    if (avatar && avatar.complete) {
+                        const avatarSize = height - padding * 2;
+                        ctx.drawImage(avatar, x + padding, y + padding, avatarSize, avatarSize);
+                        ctx.font = 'bold 16px Arial';
+                        ctx.fillStyle = '#fff';
+                        ctx.textAlign = 'left';
+                        ctx.fillText(currentMessageData.name, x + avatarSize + padding * 2, y + padding * 1.5);
+                        
+                        ctx.font = '14px Arial';
+                        ctx.fillText(currentMessageData.message, x + avatarSize + padding * 2, y + padding * 3);
+                    } else {
+                        ctx.font = 'bold 16px Arial';
+                        ctx.fillStyle = '#fff';
+                        ctx.textAlign = 'left';
+                        ctx.fillText(currentMessageData.name, x + padding, y + padding * 1.5);
+                        
+                        ctx.font = '14px Arial';
+                        ctx.fillText(currentMessageData.message, x + padding, y + padding * 3);
+                    }
+                    
+                    // Scan lines effect
+                    ctx.globalAlpha = 0.1;
+                    for (let i = 0; i < height; i += 2) {
+                        ctx.fillStyle = i % 4 === 0 ? '#fff' : '#000';
+                        ctx.fillRect(x, y + i, width, 1);
+                    }
+                    ctx.globalAlpha = 1;
+
+                    // Draw message
+                    if (currentVideoCall.fadeIn > 0) {
+                        ctx.globalAlpha = 1 - (currentVideoCall.fadeIn / 15);
+                        currentVideoCall.fadeIn--;
+                    } else if (currentVideoCall.fadeOut > 0) {
+                        ctx.globalAlpha = currentVideoCall.fadeOut / 15;
+                    }
+
+                    // Update video call state
+                    currentVideoCall.timer--;
+                    if (currentVideoCall.timer <= 0) {
+                        if (currentVideoCall.currentMessage < currentVideoCall.dialogue.messages.length - 1) {
+                            currentVideoCall.currentMessage++;
+                            currentVideoCall.timer = 300;
+                            currentVideoCall.fadeIn = 15;  // Reset fade in for new message
+                        } else {
+                            if (currentVideoCall.fadeOut === 0) {
+                                currentVideoCall.fadeOut = 15;
+                            } else {
+                                currentVideoCall = null;
+                            }
+                        }
+                    }
+                }
+
+                // Draw achievement notifications
+                achievementState.notifications = achievementState.notifications.filter(notification => {
+                    // Animate notification
+                    notification.y += (notification.targetY - notification.y) * 0.1;
+                    notification.timer--;
+                    notification.opacity = notification.timer > 90 ? 1 : notification.timer / 90;
+
+                    // Draw notification
+                    const width = 400;
+                    const height = 60;
+                    const x = (canvas.width - width) / 2; // Center horizontally
+
+                    // Background with gradient
+                    const gradient = ctx.createLinearGradient(x, notification.y, x + width, notification.y + height);
+                    gradient.addColorStop(0, `rgba(0, 0, 0, ${0.9 * notification.opacity})`);
+                    gradient.addColorStop(0.5, `rgba(20, 20, 40, ${0.9 * notification.opacity})`);
+                    gradient.addColorStop(1, `rgba(0, 0, 0, ${0.9 * notification.opacity})`);
+                    
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(x, notification.y, width, height);
+                    
+                    // Gold border
+                    ctx.strokeStyle = `rgba(255, 215, 0, ${notification.opacity})`;
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x, notification.y, width, height);
+
+                    // Achievement text
+                    ctx.globalAlpha = notification.opacity;
+                    
+                    // Icon and "Achievement Unlocked!"
+                    ctx.fillStyle = '#ffd700';
+                    ctx.font = 'bold 24px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(
+                        `${notification.achievement.icon} Achievement Unlocked!`, 
+                        canvas.width / 2,
+                        notification.y + 25
+                    );
+                    
+                    // Achievement name and description
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '16px Arial';
+                    ctx.fillText(
+                        `${notification.achievement.name} - ${notification.achievement.description}`,
+                        canvas.width / 2,
+                        notification.y + 45
+                    );
+
+                    ctx.globalAlpha = 1;
+
+                    return notification.timer > 0;
+                });
+
+                // Check if initial messages are done
+                if (questState.initialDelay && !currentVideoCall) {
+                    questState.initialDelay = false;
+                    questState.lastQuestTime = Date.now();
+                }
+
+                // Start new quest if none is active
+                startNewQuest();
+
+                // Update and draw quest
+                drawQuestUI();
+
+                // Draw godmode indicator if active
+                if (window.godmode) {
+                    ctx.save();
+                    ctx.font = 'bold 14px Arial';
+                    ctx.fillStyle = '#ff0';
+                    ctx.textAlign = 'right';
+                    ctx.fillText('GOD MODE', canvas.width - 10, 30);
+                    
+                    // Add glow around player
+                    ctx.beginPath();
+                    ctx.arc(player.x, player.y, player.width * 0.8, 0, Math.PI * 2);
+                    ctx.strokeStyle = `rgba(255, 255, 0, ${0.5 + Math.sin(Date.now() * 0.005) * 0.3})`;
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    ctx.restore();
+                }
+
+                // Update and remove expired power-ups
+                for (let i = powerUps.length - 1; i >= 0; i--) {
+                    const powerUp = powerUps[i];
+                    powerUp.lifetime--;
+
+                    // Remove if expired
+                    if (powerUp.lifetime <= 0) {
+                        powerUps.splice(i, 1);
+                        continue;
+                    }
+
+                    // Add fade out effect when close to expiring
+                    const alpha = powerUp.lifetime < 60 ? powerUp.lifetime / 60 : 1;
+                    ctx.globalAlpha = alpha;
+
+                    // Draw power-up
+                    ctx.fillStyle = powerUp.type === 'speed' ? '#00f' : 
+                                   powerUp.type === 'super' ? '#ff0' : 
+                                   powerUp.type === 'mega-ray' ? '#f0f' : 
+                                   powerUp.type === 'heart' ? '#f00' : '#0ff';
+                    
+                    ctx.fillRect(powerUp.x, powerUp.y, powerUp.width, powerUp.height);
+                    
+                    ctx.globalAlpha = 1;
+                }
+
+                // Draw lives as hearts under kills score
+                ctx.font = '20px Arial';
+                ctx.fillStyle = '#ff0000';
+                ctx.textAlign = 'left';
+                const hearts = '❤️'.repeat(player.lives);
+                ctx.fillText(hearts, 10, 80);  // Position under kills score
+
+                // Add after drawing hearts:
+                // Check for boss trigger at 2000 points
+                if (score >= GAME_CONFIG.BOSS_TRIGGER_SCORE && 
+                    !bossActive && 
+                    score - lastBossSpawn >= GAME_CONFIG.BOSS_SCORE_INTERVAL) {
+                    startBossBattle();
+                }
+
+                if (bossActive) {
+                    updateBoss();
+                    drawBoss();
+                } else {
+                    // Regular enemy updates continue...
+                    for (let i = enemies.length - 1; i >= 0; i--) {
+                        // ... existing enemy update code ...
+                    }
+                }
+            } else if (state === 'gameOver') {
+                // Game over overlay with stats
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Main game over text
+                ctx.fillStyle = '#fff';
+                ctx.font = '40px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('Game Over', canvas.width / 2, canvas.height / 3 - 40);
+                
+                // Score, Time, and Kills
+                ctx.font = '30px Arial';
+                ctx.fillText(`Final Score: ${score}`, canvas.width / 2, canvas.height / 3);
+                
+                // Display frozen time
+                const seconds = Math.floor(achievementState.finalTime / 1000);
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                const timeText = `Time Survived: ${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+                ctx.fillText(timeText, canvas.width / 2, canvas.height / 3 + 40);
+
+                // Display total kills
+                ctx.fillText(`Threats Eliminated: ${achievementState.enemiesKilled}`, canvas.width / 2, canvas.height / 3 + 80);
+
+                // Calculate column positions
+                const columnWidth = 300;
+                const columnGap = 50;
+                const leftColumnX = canvas.width / 2 - columnWidth - columnGap;
+                const rightColumnX = canvas.width / 2 + columnGap;
+                let leftY = canvas.height / 2;
+                let rightY = canvas.height / 2;
+
+                // Left Column: Achievements
+                ctx.textAlign = 'left';
+                ctx.font = 'bold 24px Arial';
+                ctx.fillStyle = '#fff';
+                ctx.fillText('Achievements:', leftColumnX, leftY);
+                leftY += 40;
+
+                // List all achievements
+                ctx.font = '20px Arial';
+                Object.values(achievements).forEach(achievement => {
+                    if (achievement.unlocked) {
+                        ctx.fillStyle = '#ffd700';
+                        ctx.fillText(achievement.icon, leftColumnX, leftY);
+                        ctx.fillStyle = '#fff';
+                        ctx.fillText(`  ${achievement.name}`, leftColumnX + 30, leftY);
+                    } else {
+                        ctx.fillStyle = '#666';
+                        ctx.fillText('🔒', leftColumnX, leftY);
+                        ctx.fillText('  REDACTED', leftColumnX + 30, leftY);
+                    }
+                    leftY += 30;
+                });
+
+                // Right Column: Completed Quests and Weapons
+                ctx.font = 'bold 24px Arial';
+                ctx.fillStyle = '#fff';
+                ctx.fillText('Completed Quests:', rightColumnX, rightY);
+                rightY += 40;
+
+                // List completed quests
+                ctx.font = '20px Arial';
+                if (questState.completedQuests.size > 0) {
+                    for (const quest of questPool) {
+                        if (questState.completedQuests.has(quest.id)) {
+                            ctx.fillStyle = '#00ff88';
+                            ctx.fillText(`✓ ${quest.title}`, rightColumnX, rightY);
+                            ctx.fillStyle = '#aaa';
+                            ctx.fillText(` - ${quest.description}`, rightColumnX + 150, rightY);
+                            rightY += 25;
+                        }
+                    }
+                } else {
+                    ctx.fillStyle = '#666';
+                    ctx.fillText('No quests completed', rightColumnX, rightY);
+                    rightY += 30;
+                }
+
+                // Weapons section in right column
+                rightY += 20;
+                ctx.font = 'bold 24px Arial';
+                ctx.fillStyle = '#fff';
+                ctx.fillText('Weapons Collected:', rightColumnX, rightY);
+                rightY += 30;
+                
+                ctx.font = '20px Arial';
+                const weapons = Array.from(achievementState.collectedWeapons);
+                if (weapons.length > 0) {
+                    const weaponsPerLine = 2;
+                    for (let i = 0; i < weapons.length; i += weaponsPerLine) {
+                        const lineWeapons = weapons.slice(i, i + weaponsPerLine).join(', ');
+                        ctx.fillText(lineWeapons, rightColumnX, rightY);
+                        rightY += 25;
+                    }
+                } else {
+                    ctx.fillStyle = '#666';
+                    ctx.fillText('None', rightColumnX, rightY);
+                }
+
+                // Play again text at the bottom
+                ctx.font = '24px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#fff';
+                ctx.fillText('Press R to Play Again', canvas.width / 2, canvas.height - 50);
+            }
+
+            // Stop checking achievements if game is over
+            if (state === 'playing') {
+                checkAchievements();
+            }
+
+            // Update the controls visibility in game loop
+            if (state === 'playing') {
+                document.getElementById('controls').style.display = 'none';
+            } else if (state === 'gameOver') {
+                document.getElementById('controls').style.display = 'block';
+            }
+
+            if (visualEffects.screenShake > 0) {
+                ctx.restore();
+            }
+
+            requestAnimationFrame(update);
+        }
+
+        // Start game
+        update();
+
+        // Modify restart function to include start message
+        function restart() {
+            // Reset game state first
+            state = 'playing';
+            score = 0;
+            difficulty = 1;
+            
+            // Clear all arrays
+            enemies.length = 0;
+            lasers.length = 0;
+            powerUps.length = 0;
+            particles.length = 0;
+            sparkles.length = 0;
+            popupTexts.length = 0;
+            
+            // Reset boss state
+            bossActive = false;
+            currentBoss = null;
+            bossProjectiles.length = 0;
+            lastBossSpawn = 0;
+            
+            // Reset player state
+            player.x = canvas.width / 2;
+            player.y = canvas.height / 2;
+            player.vx = 0;
+            player.vy = 0;
+            player.shield = false;
+            player.weapon = 'default';
+            player.maxSpeed = 5;
+            player.lives = 3;
+            player.invulnerable = 0;
+            
+            // Reset UI
+            scoreDisplay.textContent = `Score: ${score}`;
+            killsDisplay.textContent = 'Kills: 0';
+            document.getElementById('controls').style.display = 'none';
+            
+            // Reset spawn interval
+            clearInterval(spawnInterval);
+            spawnInterval = setInterval(spawnEnemy, 1000);
+            
+            // Reset game states
+            lastMilestone = 0;
+            currentVideoCall = null;
+            lastRandomCall = 0;
+            achievementState.gameStartTime = Date.now();
+            achievementState.collectedWeapons.clear();
+            achievementState.lastMilestoneCheck = 0;
+            achievementState.enemiesKilled = 0;
+            
+            // Reset quest state
+            questState.active = null;
+            questState.enemiesKilled = 0;
+            questState.startTime = Date.now();
+            questState.lastQuestTime = 0;
+            questState.initialDelay = true;
+            questState.completedQuests.clear();
+            
+            // Add start message
+            currentVideoCall = {
+                dialogue: {
+                    name: startMessage[0].name,
+                    avatar: `/assets/${avatarNameToFile[startMessage[0].name]}.svg`,
+                    messages: startMessage
+                },
+                currentMessage: 0,
+                timer: 300,
+                fadeIn: 15,
+                fadeOut: 0,
+                type: startMessage[0].type
+            };
+        }
+
+        // Add these functions after spawnParticles
+        function createSparkle(x, y) {
+            for (let i = 0; i < 20; i++) {
+                const angle = (Math.random() * Math.PI * 2);
+                const speed = Math.random() * 8 + 2;
+                sparkles.push({
+                    x, y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    color: `hsl(${Math.random() * 60 + 30}, 100%, 50%)`, // Golden colors
+                    size: Math.random() * 3 + 1,
+                    life: Math.random() * 20 + 20
+                });
+            }
+        }
+
+        function createPopupText(x, y, score) {
+            const phrases = [
+                { text: "すごい!!", color: "#f0f", size: 40 },
+                { text: "やった!", color: "#0ff", size: 42 },
+                { text: "CRITICAL!!!", color: "#f00", size: 55, glow: true },
+                { text: "REJECTED", color: "#ff0", size: 60, glow: true },
+                { text: "INVALID!!", color: "#f0f", size: 50, glow: true },
+                { text: "ESCALATED!!", color: "#0ff", size: 48, glow: true }, 
+                { text: "HIGH!", color: "#0ff", size: 48, glow: true }, 
+                { text: "REKT!", color: "#0ff", size: 48, glow: true }, 
+                { text: "PAWNED!", color: "#0ff", size: 48, glow: true }, 
+            ];
+            
+            const phrase = phrases[Math.floor(Math.random() * phrases.length)];
+            
+            popupTexts.push({
+                text: phrase.text,
+                x: x,
+                y: y,
+                color: phrase.color,
+                size: phrase.size,
+                glow: phrase.glow || false,
+                life: 45,
+                vy: -3,
+                scale: 1.5, // Start bigger
+                vx: (Math.random() - 0.5) * 4,
+                score: score ? `+${score}` : null
+            });
+        }
+
+        // Add godmode system
+        window.godmode = false;  // Make it accessible from console
+
+        // Add difficulty calculation function
+        function calculateDifficulty(score) {
+            // Start easy and gradually increase
+            // 1.0 = base difficulty
+            // Max difficulty = 2.0 at score 5000
+            return 1 + Math.min(1, score / 5000);
+        }
+
+        // Add weaponMessages definition at the top of the script
+        const weaponMessages = {
+            'speed': { text: "SPEED BOOST!!", color: "#00f", size: 55, glow: true },
+            'super': { text: "SUPER WEAPON!!", color: "#ff0", size: 60, glow: true },
+            '360': { text: "360 MODE!!", color: "#0ff", size: 58, glow: true },
+            'mega-ray': { text: "MEGA RAY!!", color: "#f0f", size: 65, glow: true },
+            'heart': { text: "EXTRA LIFE!!", color: "#f00", size: 55, glow: true }  // Add heart message
+        };
+
+        // Add after the player definition
+        function startBossBattle() {
+            // Clear ALL existing enemies
+            enemies.length = 0;
+            
+            // Stop enemy spawning
+            clearInterval(spawnInterval);
+            
+            // Create boss instance
+            currentBoss = {
+                ...bossType,
+                x: canvas.width / 2,
+                y: -bossType.height,
+                targetY: canvas.height / 4,
+                patternTimer: 0,
+                maxHealth: bossType.health,
+                health: bossType.health,
+                entering: true,
+                flash: 0,
+                introPhase: true,
+                introTimer: 180
+            };
+
+            // Set game state
+            bossActive = true;
+            
+            // Clear projectiles
+            bossProjectiles.length = 0;
+            
+            // Dramatic entrance effect
+            addScreenShake(20);
+            spawnParticles(currentBoss.x, currentBoss.y, currentBoss.color, 'mega');
+            
+            // Big arcade-style boss introduction
+            popupTexts.push({
+                text: "WARNING!",
+                x: canvas.width / 2,
+                y: canvas.height / 2 - 100,
+                color: "#ff0000",
+                size: 80,
+                life: 120,
+                vy: 0,
+                scale: 2,
+                glow: true
+            });
+            
+            setTimeout(() => {
+                popupTexts.push({
+                    text: "BOSS APPROACHING",
+                    x: canvas.width / 2,
+                    y: canvas.height / 2,
+                    color: "#ff0000",
+                    size: 60,
+                    life: 120,
+                    vy: 0,
+                    scale: 2,
+                    glow: true
+                });
+            }, 1000);
+            
+            setTimeout(() => {
+                popupTexts.push({
+                    text: currentBoss.name,
+                    x: canvas.width / 2,
+                    y: canvas.height / 2 + 100,
+                    color: currentBoss.color,
+                    size: 100,
+                    life: 120,
+                    vy: 0,
+                    scale: 2,
+                    glow: true
+                });
+            }, 2000);
+
+            // Record spawn
+            lastBossSpawn = score;
+        }
+
+        // Modify the updateBoss function to make attacks more manageable
+        function updateBoss() {
+            if (!currentBoss) return;
+
+            // Handle intro phase
+            if (currentBoss.introPhase) {
+                currentBoss.introTimer--;
+                if (currentBoss.introTimer <= 0) {
+                    currentBoss.introPhase = false;
+                }
+                return;
+            }
+
+            // Handle entrance animation
+            if (currentBoss.entering) {
+                currentBoss.y += (currentBoss.targetY - currentBoss.y) * 0.05;
+                if (Math.abs(currentBoss.y - currentBoss.targetY) < 1) {
+                    currentBoss.entering = false;
+                }
+                return;
+            }
+
+            // Update boss position - gentle tracking of player
+            const angle = Math.atan2(player.y - currentBoss.y, player.x - currentBoss.x);
+            currentBoss.x += Math.cos(angle) * currentBoss.speed * 0.5;
+            currentBoss.y += Math.sin(angle) * currentBoss.speed * 0.5;
+
+            // Keep boss in bounds
+            currentBoss.x = Math.max(currentBoss.width/2, Math.min(canvas.width - currentBoss.width/2, currentBoss.x));
+            currentBoss.y = Math.max(currentBoss.height/2, Math.min(canvas.height - currentBoss.height/2, currentBoss.y)); // Changed from canvas.height/2
+
+            // Update pattern timer
+            currentBoss.patternTimer++;
+
+            // Reduced and more manageable spiral attack pattern
+            if (currentBoss.patternTimer % currentBoss.attackInterval === 0) {
+                const rotation = currentBoss.patternTimer * 0.1;
+                // Reduced number of projectiles and slower speed
+                for (let i = 0; i < 5; i++) {  // Reduced from 8 to 5 projectiles
+                    const angle = (i / 5) * Math.PI * 2 + rotation;
+                    bossProjectiles.push({
+                        x: currentBoss.x,
+                        y: currentBoss.y,
+                        vx: Math.cos(angle) * 3,  // Reduced from 4 to 3
+                        vy: Math.sin(angle) * 3,
+                        width: 8,
+                        height: 8,
+                        color: currentBoss.color
+                    });
+                }
+            }
+
+            // Check laser collisions with boss
+            for (let i = lasers.length - 1; i >= 0; i--) {
+                const laser = lasers[i];
+                if (laser.isBeam) {
+                    // Handle mega-ray collision
+                    const dx = currentBoss.x - laser.x;
+                    const dy = currentBoss.y - laser.y;
+                    const dist = Math.abs(Math.cos(laser.angle) * dy - Math.sin(laser.angle) * dx);
+                    
+                    if (dist < laser.width/2) {
+                        currentBoss.health -= 0.5; // Reduced damage for balance
+                        currentBoss.flash = 5;
+                        spawnParticles(currentBoss.x, currentBoss.y, currentBoss.color, 'normal');
+                        addScreenShake(2);
+
+                        if (currentBoss.health <= 0) {
+                            handleBossDefeat();
+                            break;
+                        }
+                    }
+                } else {
+                    // Regular laser collision
+                    if (laser.x > currentBoss.x - currentBoss.width/2 && 
+                        laser.x < currentBoss.x + currentBoss.width/2 && 
+                        laser.y > currentBoss.y - currentBoss.height/2 && 
+                        laser.y < currentBoss.y + currentBoss.height/2) {
+                        
+                        currentBoss.health--;
+                        currentBoss.flash = 5;
+                        lasers.splice(i, 1);
+                        spawnParticles(laser.x, laser.y, currentBoss.color, 'normal');
+                        addScreenShake(2);
+
+                        if (currentBoss.health <= 0) {
+                            handleBossDefeat();
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Check boss projectile collision with player
+            for (let i = bossProjectiles.length - 1; i >= 0; i--) {
+                const proj = bossProjectiles[i];
+                if (!player.invulnerable && !window.godmode &&
+                    Math.abs(proj.x - player.x) < (player.width + proj.width)/2 && 
+                    Math.abs(proj.y - player.y) < (player.height + proj.height)/2) {
+                    
+                    player.lives--;
+                    player.invulnerable = 120;
+                    addScreenShake(10);
+                    spawnParticles(player.x, player.y, '#ff0000', 'explosion');
+                    bossProjectiles.splice(i, 1);
+
+                    if (player.lives <= 0) {
+                        state = 'gameOver';
+                    }
+                }
+            }
+        }
+
+        function handleBossDefeat() {
+            // Visual effects
+            spawnParticles(currentBoss.x, currentBoss.y, currentBoss.color, 'mega');
+            addScreenShake(20);
+            
+            // Victory message
+            popupTexts.push({
+                text: "BOSS DEFEATED!",
+                x: canvas.width / 2,
+                y: canvas.height / 2,
+                color: currentBoss.color,
+                size: 60,
+                life: 120,
+                vy: -2,
+                scale: 2,
+                glow: true
+            });
+
+            // Rewards
+            score += 1000;
+            scoreDisplay.textContent = `Score: ${score}`;
+            
+            // Spawn power-ups
+            for (let i = 0; i < 3; i++) {
+                const types = ['speed', 'super', '360', 'mega-ray', 'heart'];
+                const type = types[Math.floor(Math.random() * types.length)];
+                powerUps.push({
+                    x: currentBoss.x + (Math.random() - 0.5) * 100,
+                    y: currentBoss.y + (Math.random() - 0.5) * 100,
+                    width: 20,
+                    height: 20,
+                    type,
+                    lifetime: 1800
+                });
+            }
+
+            // Reset boss state
+            bossActive = false;
+            currentBoss = null;
+            bossProjectiles.length = 0;
+
+            // Restart enemy spawning
+            spawnInterval = setInterval(spawnEnemy, 1000);
+            
+            // Set lastBossSpawn to prevent immediate respawn
+            lastBossSpawn = score;
+        }
+
+        function drawBoss() {
+            if (!currentBoss) return;
+
+            // Draw boss
+            ctx.save();
+            if (currentBoss.flash > 0) {
+                ctx.globalAlpha = 0.5 + Math.sin(currentBoss.flash * 0.5) * 0.5;
+                currentBoss.flash--;
+            }
+            
+            // Draw boss shape
+            ctx.fillStyle = currentBoss.color;
+            ctx.fillRect(
+                currentBoss.x - currentBoss.width/2,
+                currentBoss.y - currentBoss.height/2,
+                currentBoss.width,
+                currentBoss.height
+            );
+            
+            // Draw projectiles
+            bossProjectiles.forEach(proj => {
+                ctx.fillStyle = proj.color;
+                ctx.fillRect(
+                    proj.x - proj.width/2,
+                    proj.y - proj.height/2,
+                    proj.width,
+                    proj.height
+                );
+            });
+            
+            ctx.restore();
+
+            // Draw health bar
+            const barWidth = canvas.width * 0.6;
+            const barHeight = 20;
+            const barX = (canvas.width - barWidth) / 2;
+            const barY = 20;
+            
+            // Background
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(barX, barY, barWidth, barHeight);
+            
+            // Health
+            const healthPercent = currentBoss.health / currentBoss.maxHealth;
+            const gradient = ctx.createLinearGradient(barX, barY, barX + barWidth * healthPercent, barY + barHeight);
+            gradient.addColorStop(0, currentBoss.color);
+            gradient.addColorStop(1, '#fff');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight);
+            
+            // Boss name
+            ctx.font = 'bold 16px Arial';
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'center';
+            ctx.fillText(currentBoss.name, canvas.width / 2, barY + barHeight + 20);
+        }
+    </script>
+</body>
+</html>
