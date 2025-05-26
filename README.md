@@ -1,7 +1,7 @@
 # cantina-galactic-gunners
 Vibe Coded self contained HTML Shoot ’em up game. 
 
-> Use at own risk. I have LITERALLY vibe-coded 95% of this. Have absolutely no idea what the code does but it works and it's fun.
+> Use at own risk. I have LITERALLY vibe-coded 95% of this. Have absolutely no idea what the code does but it works and it's fun. Start it up with VSCode Live Server to load assets.
 > 
 > Enjoy!
 
